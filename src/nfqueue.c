@@ -42,6 +42,8 @@
 static int fd = -1;
 static struct nfq_handle *h = NULL;
 static struct nfq_q_handle *qh = NULL;
+static uint8_t *payload_buffer = NULL;
+static const size_t payload_bufsiz = 65535;
 
 static int callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
                     struct nfq_data *nfa, void *data)
@@ -74,6 +76,13 @@ static int callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
         goto ret_accept;
     }
 
+    if ((size_t) pkt_len > payload_bufsiz) {
+        EE("ERROR: packet is too big: %d", pkt_len);
+        goto ret_accept;
+    }
+
+    memcpy(payload_buffer, pkt_data, pkt_len);
+
     memset(&sll, 0, sizeof(sll));
     sll.sll_family = AF_PACKET;
     sll.sll_protocol = ph->hw_protocol;
@@ -98,14 +107,14 @@ static int callback(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
         memset(sll.sll_addr, 0, sizeof(sll.sll_addr));
     }
 
-    verdict = fh_rawsend_handle(&sll, pkt_data, pkt_len, &modified);
+    verdict = fh_rawsend_handle(&sll, payload_buffer, pkt_len, &modified);
     if (verdict < 0) {
         EE(T(fh_rawsend_handle));
         goto ret_accept;
     }
 
     if (modified && verdict != NF_DROP) {
-        return nfq_set_verdict(qh, pkt_id, verdict, pkt_len, pkt_data);
+        return nfq_set_verdict(qh, pkt_id, verdict, pkt_len, payload_buffer);
     }
 
     return nfq_set_verdict(qh, pkt_id, verdict, 0, NULL);
@@ -121,6 +130,12 @@ int fh_nfq_setup(void)
     char *err_hint;
     socklen_t opt_len;
 
+    payload_buffer = malloc(payload_bufsiz);
+    if (!payload_buffer) {
+        E("ERROR: malloc(): %s", strerror(errno));
+        return -1;
+    }
+
     h = nfq_open();
     if (!h) {
         switch (errno) {
@@ -134,7 +149,7 @@ int fh_nfq_setup(void)
                 err_hint = "";
         }
         E("ERROR: nfq_open(): %s%s", strerror(errno), err_hint);
-        return -1;
+        goto free_buff;
     }
 
     qh = nfq_create_queue(h, g_ctx.nfqnum, &callback, NULL);
@@ -192,6 +207,9 @@ int fh_nfq_setup(void)
 
     return 0;
 
+free_buff:
+    free(payload_buffer);
+
 destroy_queue:
     nfq_destroy_queue(qh);
 
@@ -213,6 +231,10 @@ void fh_nfq_cleanup(void)
         nfq_close(h);
         h = NULL;
         fd = -1;
+    }
+
+    if (payload_buffer) {
+        free(payload_buffer);
     }
 }
 
