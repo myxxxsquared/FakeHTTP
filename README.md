@@ -25,6 +25,8 @@ Payload Options:
   -b <file>          use TCP payload from binary file
   -e <hostname>      hostname for HTTPS obfuscation
   -h <hostname>      hostname for HTTP obfuscation
+  -u <ip>            target IP address for obfuscation
+  -p <port>          target TCP port for obfuscation
 
 General Options:
   -0                 process inbound connections
@@ -45,9 +47,11 @@ Advanced Options:
   -t <ttl>           TTL for generated packets
   -x <mask>          set the mask for fwmark
   -y <pct>           raise TTL dynamically to <pct>% of estimated hops
-  -z                 use iptables commands instead of nft
 
 ```
+
+When `-u` and `-p` are specified, nftables filters both directions directly:
+only TCP traffic to or from the given IP and port is placed into NFQUEUE.
 
 
 ## License

@@ -20,11 +20,7 @@
 #define _GNU_SOURCE
 #include "nfrules.h"
 
-#include <stdlib.h>
-
 #include "globvar.h"
-#include "ipv4ipt.h"
-#include "ipv6ipt.h"
 #include "ipv4nft.h"
 #include "ipv6nft.h"
 #include "logging.h"
@@ -47,43 +43,24 @@ int fh_nfrules_setup(void)
         return 0;
     }
 
-    if (!g_ctx.use_iptables && !nft_is_working()) {
-        E("WARNING: Falling back to iptables command, as nft command is not "
-          "working.");
-        g_ctx.use_iptables = 1;
+    if (!nft_is_working()) {
+        E("ERROR: nft command is not working.");
+        return -1;
     }
 
-    if (g_ctx.use_iptables) {
-        if (g_ctx.use_ipv4) {
-            res = fh_ipt4_setup();
-            if (res < 0) {
-                E(T(fh_ipt4_setup));
-                return -1;
-            }
+    if (g_ctx.use_ipv4) {
+        res = fh_nft4_setup();
+        if (res < 0) {
+            E(T(fh_nft4_setup));
+            return -1;
         }
+    }
 
-        if (g_ctx.use_ipv6) {
-            res = fh_ipt6_setup();
-            if (res < 0) {
-                E(T(fh_ipt6_setup));
-                return -1;
-            }
-        }
-    } else {
-        if (g_ctx.use_ipv4) {
-            res = fh_nft4_setup();
-            if (res < 0) {
-                E(T(fh_nft4_setup));
-                return -1;
-            }
-        }
-
-        if (g_ctx.use_ipv6) {
-            res = fh_nft6_setup();
-            if (res < 0) {
-                E(T(fh_nft6_setup));
-                return -1;
-            }
+    if (g_ctx.use_ipv6) {
+        res = fh_nft6_setup();
+        if (res < 0) {
+            E(T(fh_nft6_setup));
+            return -1;
         }
     }
 
@@ -97,21 +74,11 @@ void fh_nfrules_cleanup(void)
         return;
     }
 
-    if (g_ctx.use_iptables) {
-        if (g_ctx.use_ipv4) {
-            fh_ipt4_cleanup();
-        }
+    if (g_ctx.use_ipv4) {
+        fh_nft4_cleanup();
+    }
 
-        if (g_ctx.use_ipv6) {
-            fh_ipt6_cleanup();
-        }
-    } else {
-        if (g_ctx.use_ipv4) {
-            fh_nft4_cleanup();
-        }
-
-        if (g_ctx.use_ipv6) {
-            fh_nft6_cleanup();
-        }
+    if (g_ctx.use_ipv6) {
+        fh_nft6_cleanup();
     }
 }

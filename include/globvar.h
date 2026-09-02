@@ -22,6 +22,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/socket.h>
 
 #include "payload.h"
 
@@ -47,7 +48,10 @@ struct fh_context {
     /* -w */ const char *logpath;
     /* -x */ uint32_t fwmask;
     /* -y */ int dynamic_pct;
-    /* -z */ int use_iptables;
+    /* -u, -p */ struct sockaddr_storage target_addr;
+    /* -u */ int target_ip_set;
+    /* -p */ uint16_t target_port;
+    /* -p */ int target_port_set;
 };
 
 extern struct fh_context g_ctx;

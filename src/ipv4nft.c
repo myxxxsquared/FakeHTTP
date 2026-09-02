@@ -22,6 +22,7 @@
 
 #include <inttypes.h>
 #include <stdlib.h>
+#include <arpa/inet.h>
 
 #include "globvar.h"
 #include "logging.h"
@@ -142,20 +143,42 @@ int fh_nft4_setup(void)
         /*
             send to nfqueue
         */
-        "        tcp flags & (syn | fin | rst) == syn queue num %" PRIu32
+         "        %s tcp flags & (syn | fin | rst) == syn queue num %" PRIu32
         " bypass;\n"
 
         "    }\n"
         "}\n";
 
     char *nft_conf_opt_fmt =
-        "add rule ip fakehttp fh_rules tcp flags & (syn | ack | fin | rst) "
-        "== ack ct packets 2-4 queue num %" PRIu32 " bypass;\n";
+         "add rule ip fakehttp fh_rules %s tcp flags & (syn | ack | fin | rst) "
+         "== ack ct packets 2-4 queue num %" PRIu32 " bypass;\n";
+    char target_ip[INET_ADDRSTRLEN];
+    char target_expr[256] = "";
+    const char *target = target_expr;
 
     fh_nft4_cleanup();
 
+    if (g_ctx.target_ip_set) {
+        if (g_ctx.target_addr.ss_family != AF_INET) {
+            return 0;
+        }
+        if (!inet_ntop(AF_INET,
+                       &((struct sockaddr_in *) &g_ctx.target_addr)->sin_addr,
+                       target_ip, sizeof(target_ip))) {
+            E("ERROR: inet_ntop(): failure");
+            return -1;
+        }
+        res = snprintf(target_expr, sizeof(target_expr),
+                       "(ip saddr %s tcp sport %u or ip daddr %s tcp dport %u)",
+                       target_ip, g_ctx.target_port, target_ip,
+                       g_ctx.target_port);
+        if (res < 0 || (size_t) res >= sizeof(target_expr)) {
+            E("ERROR: snprintf(): failure");
+            return -1;
+        }
+    }
     res = snprintf(nft_conf_buff, sizeof(nft_conf_buff), nft_conf_fmt,
-                   g_ctx.fwmask, g_ctx.fwmark, g_ctx.nfqnum);
+                   g_ctx.fwmask, g_ctx.fwmark, target, g_ctx.nfqnum);
     if (res < 0 || (size_t) res >= sizeof(nft_conf_buff)) {
         E("ERROR: snprintf(): %s", "failure");
         return -1;
@@ -172,7 +195,7 @@ int fh_nft4_setup(void)
         This rule is optional. We do not verify its execution result.
     */
     res = snprintf(nft_conf_buff, sizeof(nft_conf_buff), nft_conf_opt_fmt,
-                   g_ctx.nfqnum);
+                   target, g_ctx.nfqnum);
     if (res < 0 || (size_t) res >= sizeof(nft_conf_buff)) {
         E("ERROR: snprintf(): %s", "failure");
         return -1;

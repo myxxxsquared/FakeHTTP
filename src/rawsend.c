@@ -26,7 +26,6 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <net/ethernet.h>
-#include <net/if.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <linux/if_packet.h>
@@ -148,69 +147,9 @@ static int remove_tfo_cookie(uint16_t ethertype, uint8_t *pkt,
 }
 
 
-/*
-    This is a workaround for iptables since it does not allow us to intercept
-    packets after POSTROUTING SNAT, which means the SNATed source address is
-    unknown.
-    Instead of using an AF_PACKET socket, we create a temporary AF_INET or
-    AF_INET6 raw socket, so that the packet gets SNATed correctly.
-*/
-static int sendto_snat(struct sockaddr_ll *sll, struct sockaddr *daddr,
-                       uint8_t *pkt_buff, int pkt_len)
-{
-    int res, ret, sock_fd;
-    ssize_t nbytes;
-    char *iface, iface_buf[IF_NAMESIZE];
-
-    ret = -1;
-
-    iface = if_indextoname(sll->sll_ifindex, iface_buf);
-    if (!iface) {
-        E("ERROR: if_indextoname(): %s", strerror(errno));
-        return -1;
-    }
-
-    sock_fd = socket(daddr->sa_family, SOCK_RAW, IPPROTO_RAW);
-    if (sock_fd < 0) {
-        E("ERROR: socket(): %s", strerror(errno));
-        return -1;
-    }
-
-    res = setsockopt(sock_fd, SOL_SOCKET, SO_BINDTODEVICE, iface,
-                     strlen(iface));
-    if (res < 0) {
-        E("ERROR: setsockopt(): SO_BINDTODEVICE: %s", strerror(errno));
-        goto close_socket;
-    }
-
-    res = setsockopt(sock_fd, SOL_SOCKET, SO_MARK, &g_ctx.fwmark,
-                     sizeof(g_ctx.fwmark));
-    if (res < 0) {
-        E("ERROR: setsockopt(): SO_MARK: %s", strerror(errno));
-        goto close_socket;
-    }
-
-    nbytes = sendto(sock_fd, pkt_buff, pkt_len, 0, daddr,
-                    daddr->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6)
-                                                 : sizeof(struct sockaddr_in));
-    if (nbytes < 0) {
-        E("ERROR: sendto(): %s", strerror(errno));
-        goto close_socket;
-    }
-
-    ret = nbytes;
-
-close_socket:
-    close(sock_fd);
-
-    return ret;
-}
-
-
 static int send_payload(struct sockaddr_ll *sll, struct sockaddr *saddr,
                         struct sockaddr *daddr, uint8_t ttl, uint16_t sport_be,
-                        uint16_t dport_be, uint32_t seq_be, uint32_t ackseq_be,
-                        int need_snat)
+                        uint16_t dport_be, uint32_t seq_be, uint32_t ackseq_be)
 {
     int pkt_len;
     ssize_t nbytes;
@@ -237,19 +176,11 @@ static int send_payload(struct sockaddr_ll *sll, struct sockaddr *saddr,
         return -1;
     }
 
-    if (need_snat) {
-        nbytes = sendto_snat(sll, daddr, pkt_buff, pkt_len);
-        if (nbytes < 0) {
-            E(T(sendto_snat));
-            return -1;
-        }
-    } else {
-        nbytes = sendto(sockfd, pkt_buff, pkt_len, 0, (struct sockaddr *) sll,
-                        sizeof(*sll));
-        if (nbytes < 0) {
-            E("ERROR: sendto(): %s", strerror(errno));
-            return -1;
-        }
+    nbytes = sendto(sockfd, pkt_buff, pkt_len, 0, (struct sockaddr *) sll,
+                    sizeof(*sll));
+    if (nbytes < 0) {
+        E("ERROR: sendto(): %s", strerror(errno));
+        return -1;
     }
 
     return 0;
@@ -395,7 +326,7 @@ int fh_rawsend_handle(struct sockaddr_ll *sll, uint8_t *pkt_data, int pkt_len,
 
         for (i = 0; i < g_ctx.repeat; i++) {
             res = send_payload(sll, daddr, saddr, snd_ttl, tcph->dest,
-                               tcph->source, tcph->ack_seq, ack_new, 0);
+                               tcph->source, tcph->ack_seq, ack_new);
             if (res < 0) {
                 E(T(send_payload));
                 return -1;
@@ -439,8 +370,7 @@ int fh_rawsend_handle(struct sockaddr_ll *sll, uint8_t *pkt_data, int pkt_len,
 
         for (i = 0; i < g_ctx.repeat; i++) {
             res = send_payload(sll, saddr, daddr, snd_ttl, tcph->source,
-                               tcph->dest, seq_new, tcph->ack_seq,
-                               g_ctx.use_iptables /* needs SNAT */);
+                               tcph->dest, seq_new, tcph->ack_seq);
             if (res < 0) {
                 E(T(send_payload));
                 return -1;
@@ -457,19 +387,11 @@ int fh_rawsend_handle(struct sockaddr_ll *sll, uint8_t *pkt_data, int pkt_len,
             it guarantees that our payload is always sent before the client's
             packet.
         */
-        if (g_ctx.use_iptables) {
-            nbytes = sendto_snat(sll, daddr, pkt_data, pkt_len);
-            if (nbytes < 0) {
-                E(T(sendto_snat));
-                return -1;
-            }
-        } else {
-            nbytes = sendto(sockfd, pkt_data, pkt_len, 0,
-                            (struct sockaddr *) sll, sizeof(*sll));
-            if (nbytes < 0) {
-                E("ERROR: sendto(): %s", strerror(errno));
-                return -1;
-            }
+        nbytes = sendto(sockfd, pkt_data, pkt_len, 0,
+                        (struct sockaddr *) sll, sizeof(*sll));
+        if (nbytes < 0) {
+            E("ERROR: sendto(): %s", strerror(errno));
+            return -1;
         }
 
         E_INFO("%s:%u <===SYN-ACK=== %s:%u", dst_ip_str, ntohs(tcph->dest),

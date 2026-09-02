@@ -28,6 +28,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 #include <net/if.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -63,6 +64,8 @@ static void print_usage(const char *name)
         "  -b <file>          use TCP payload from binary file\n"
         "  -e <hostname>      hostname for HTTPS obfuscation\n"
         "  -h <hostname>      hostname for HTTP obfuscation\n"
+        "  -u <ip>            target IP address for obfuscation\n"
+        "  -p <port>          target TCP port for obfuscation\n"
         "\n"
         "General Options:\n"
         "  -0                 process inbound connections\n"
@@ -84,7 +87,6 @@ static void print_usage(const char *name)
         "  -x <mask>          set the mask for fwmark\n"
         "  -y <pct>           raise TTL dynamically to <pct>%% of estimated "
         "hops\n"
-        "  -z                 use iptables commands instead of nft\n"
         "\n"
         "FakeHTTP version " VERSION "\n";
 
@@ -125,7 +127,7 @@ int main(int argc, char *argv[])
 
     plinfo_cnt = iface_cnt = 0;
 
-    while ((opt = getopt(argc, argv, "0146ab:de:fgh:i:km:n:r:st:w:x:y:z")) !=
+    while ((opt = getopt(argc, argv, "0146ab:de:fgh:i:km:n:p:r:st:u:w:x:y")) !=
            -1) {
         switch (opt) {
             case '0':
@@ -238,6 +240,17 @@ int main(int argc, char *argv[])
                 g_ctx.fwmark = tmp;
                 break;
 
+            case 'p':
+                tmp = strtoull(optarg, NULL, 0);
+                if (!tmp || tmp > UINT16_MAX) {
+                    fprintf(stderr, "%s: invalid value for -p.\n", argv[0]);
+                    print_usage(argv[0]);
+                    goto free_mem;
+                }
+                g_ctx.target_port = tmp;
+                g_ctx.target_port_set = 1;
+                break;
+
             case 'n':
                 tmp = strtoull(optarg, NULL, 0);
                 if (!tmp || tmp > UINT32_MAX) {
@@ -272,6 +285,24 @@ int main(int argc, char *argv[])
                 g_ctx.ttl = tmp;
                 break;
 
+            case 'u':
+                memset(&g_ctx.target_addr, 0, sizeof(g_ctx.target_addr));
+                if (inet_pton(AF_INET, optarg,
+                              &((struct sockaddr_in *) &g_ctx.target_addr)
+                                   ->sin_addr) == 1) {
+                    g_ctx.target_addr.ss_family = AF_INET;
+                } else if (inet_pton(AF_INET6, optarg,
+                                     &((struct sockaddr_in6 *) &g_ctx.target_addr)
+                                          ->sin6_addr) == 1) {
+                    g_ctx.target_addr.ss_family = AF_INET6;
+                } else {
+                    fprintf(stderr, "%s: invalid value for -u.\n", argv[0]);
+                    print_usage(argv[0]);
+                    goto free_mem;
+                }
+                g_ctx.target_ip_set = 1;
+                break;
+
             case 'w':
                 g_ctx.logpath = optarg;
                 if (strlen(g_ctx.logpath) > PATH_MAX - 1) {
@@ -300,10 +331,6 @@ int main(int argc, char *argv[])
                     goto free_mem;
                 }
                 g_ctx.dynamic_pct = tmp;
-                break;
-
-            case 'z':
-                g_ctx.use_iptables = 1;
                 break;
 
             default:
@@ -344,6 +371,26 @@ int main(int argc, char *argv[])
         fprintf(stderr, "%s: option -h or -b is required.\n", argv[0]);
         print_usage(argv[0]);
         goto free_mem;
+    }
+
+    if (g_ctx.target_ip_set != g_ctx.target_port_set) {
+        fprintf(stderr, "%s: options -u and -p must be used together.\n",
+                argv[0]);
+        print_usage(argv[0]);
+        goto free_mem;
+    }
+
+    if (g_ctx.target_ip_set) {
+        if (g_ctx.skipfw) {
+            fprintf(stderr, "%s: -u/-p cannot be used with -f.\n", argv[0]);
+            print_usage(argv[0]);
+            goto free_mem;
+        }
+
+        /* nftables rules are family-specific; restrict processing to the
+           family of the selected target rather than queueing the other one. */
+        g_ctx.use_ipv4 = g_ctx.target_addr.ss_family == AF_INET;
+        g_ctx.use_ipv6 = g_ctx.target_addr.ss_family == AF_INET6;
     }
 
     if (!g_ctx.alliface && !iface_cnt) {
